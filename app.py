@@ -4,19 +4,30 @@ from datetime import date
 
 app = Flask('my-todos-app')
 
+DATAFILE = 'todos.txt'
+
+'''
+obecne by mozna prehlednosti pomohl, kdybychom meli nejakou Tridu
+Class item:
+    identifier
+    is_done
+    deadline
+    description
+
+a nejaky parser, ktery by umel umel udelat split nad prectenymi daty
+a pote nejakou funci na serializaci teto tridy v okamziku kdy ji chceme zapisovat do souboru
+
+ponauceni je vytvorit si nejakou abstrakci, ktera pote umozni snadnejsi pristup.
+'''
 
 @app.route('/todo', methods=['POST'])
 def add_item():
-    d = request.data.decode().split(" ", 2)
-    identifier = d[0]
-    deadline = d[1]
-    description = d[2]
+    identifier, deadline, description = request.data.decode().split(" ", 2)
 
-    if re.search(r"^[a-zA-Z0-9_]+$", identifier) \
-            and re.search(r"^([0-9]{4}-[0-9]{2}-[0-9]{2})$", deadline) \
-            and ('\n' not in description) \
-            and ('\r' not in description):
-        with open('todos.txt', 'a') as f:  # TODO korektni pridani nove radky
+    if re.match(r"^[a-zA-Z0-9_]+$", identifier) \
+            and re.match(r"^([0-9]{4}-[0-9]{2}-[0-9]{2})$", deadline) \
+            and re.match(r"^[^\n\r]*$", description):
+        with open(DATAFILE, 'a') as f:  # TODO korektni pridani nove radky
             f.write(identifier + " False " + deadline + " " + description + "\n")
         return '', 201
     else:
@@ -27,29 +38,28 @@ def add_item():
 def get_todos():
     try:
         params = request.args
-        if len(params) == 0:
-            with open("todos.txt") as f:
-                result = f.read()
-            return result
-        else:
-            with open("todos.txt") as f:
+        lines = ''
+        with open(DATAFILE) as f:
+            if len(params) == 0:
+                return f.read()
+            else:
                 lines = f.readlines()
 
-            for p in params:
-                p_value = params.get(p)
-                if p in ["date_from", "date_to", "is_done"]:
-                    lines = filter_todos(p, p_value, lines)
-                elif p == "sort_by" and p_value == "urgency":
-                    lines = sort_todos(lines)
-                elif p == "count" and p_value.isnumeric():
-                    continue
-                else:
-                    return "Chybné parametry", 400
+        for p in params:
+            p_value = params.get(p)
+            if p in ["date_from", "date_to", "is_done"]:
+                lines = filter_todos(p, p_value, lines)
+            elif p == "sort_by" and p_value == "urgency":
+                lines = sort_todos(lines)
+            elif p == "count" and p_value.isnumeric():
+                continue
+            else:
+                return "Chybné parametry", 400
 
-            if "count" in params:
-                lines = head_todos(int(params.get("count")), lines)
+        if "count" in params:
+            lines = head_todos(int(params.get("count")), lines)
 
-            return ''.join(lines)
+        return ''.join(lines)
 
     except IOError:
         return "Seznam úkolů neexistuje, přidej první úkol", 404
@@ -57,7 +67,7 @@ def get_todos():
 
 @app.route('/most-urgent')
 def get_most_urgent():
-    with open("todos.txt") as f:
+    with open(DATAFILE) as f:
         lines = f.readlines()
 
     lines = filter_todos("date_from", "now", lines)
@@ -70,10 +80,10 @@ def get_most_urgent():
 @app.route('/todo/<item>', methods=['DELETE'])
 def delete_item(item):
     try:
-        with open("todos.txt", "r") as f:
+        with open(DATAFILE, "r") as f:
             lines = f.readlines()
 
-        with open("todos.txt", "w") as f:
+        with open(DATAFILE, "w") as f:
             todo_exists = False
             for line in lines:
                 identifier = line.strip("\n").split(" ", 1)[0]
@@ -93,41 +103,39 @@ def delete_item(item):
 
 @app.route('/<item>/set-done', methods=['PUT'])
 def set_done(item):
-    return change_is_done_status(item, "True", "todos.txt")
+    return change_is_done_status(item, "True")
 
 
 @app.route('/<item>/set-not-done', methods=['PUT'])
 def set_not_done(item):
-    return change_is_done_status(item, "False", "todos.txt")
+    return change_is_done_status(item, "False")
 
-
-def change_is_done_status(item, is_done_value, file):
+def change_is_done_status(item, is_done_value):
     try:
-        with open(file, "r") as f:
+        with open(DATAFILE, "r") as f:
             lines = f.readlines()
 
-        with open(file, "w") as f:
-            todo_exists = False
-
-            for line in lines:
-                spl = line.split(" ", 3)
-                identifier = spl[0]
-                deadline = spl[2]
-                description = spl[3]
-
-                if identifier == item:
-                    todo_exists = True
-                    newline = identifier + " " + is_done_value + " " + deadline + " " + description
-                    f.write(newline)
-                else:
-                    f.write(line)
+        todo_exists = False
+        for line in lines:
+            # Casto se opakuje tento explicitni split. Myslim, ze by se to dalo skryt pod nejakou metodu.
+            identifier, _, deadline, description = line.split(" ", 3)
+            if identifier == item:
+                todo_exists = True
+                # zde si popravde nejsem uplne 100% jisty, ze to zmeni value v lines
+                line = " ".join([identifier, is_done_value, deadline, description])
 
         if todo_exists:
+            # ale urcite chceme menit data na jednom miste jen v okamziku kdy jsme si jisti ze je co menit
+            # na druhou stranu musime byt opatrni, kdyby byly nejakej soubezne dotazy tak by se nam mohlo stat
+            # ze nekdo neco prida mezi tim co my zpracovavame tento request a tudiz nove pridane data smazeme
+            # avsak synchronizace nebyla predmetem kurzu, pro jednuduchost predpokladame jeden request v jeden cas.
+            with open(DATAFILE, "w") as f:
+                f.write(lines)
             return '', 204
         else:
             return 'Úkol není na seznamu', 404
 
-    except IOError:
+    except IOError: # Tento error by se asi dal nejak odchytit globalneji
         return 'Seznam úkolů neexistuje, přidej první úkol', 404
 
 
@@ -139,6 +147,7 @@ def filter_todos(param, value, todos):
 
     if param == "date_from":
         for t in todos:
+            # opet split...neni pro ctenare na prvni pohled zrejme co vlastne dostavame
             if t.split(" ", 3)[2] >= value:
                 filtered.append(t)
     elif param == "date_to":
@@ -154,14 +163,10 @@ def filter_todos(param, value, todos):
 
 
 def sort_todos(todos):
+    # Opet manualni split
     d = {t.split()[2]: t.strip() for t in todos}
     keysort = sorted([k for k in d])
-    sorted_todos=[]
-
-    for k in keysort:
-        sorted_todos.append(d[k] + '\n')
-
-    return sorted_todos
+    return '\n'.join([d[k] for k in keysort])
 
 
 def head_todos(number_of_todos, todos):
